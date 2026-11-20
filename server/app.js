@@ -2,7 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import { accounts, requireAccount } from "./accounts.js";
 
-const { MONGODB_URI, GEMINI_API_KEY, MONGODB_DB = "my_classroom", GEMINI_MODEL = "gemini-2.5-flash" } = process.env;
+const { MONGODB_URI, GEMINI_API_KEY, MONGODB_DB = "my_classroom", GEMINI_MODEL = "gemini-3.8-flash" } = process.env;
 
 const unitSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -20,16 +20,33 @@ const Subject = mongoose.model("Subject", subjectSchema);
 async function generate(parts) {
   if (!GEMINI_API_KEY) throw Object.assign(new Error("Missing GEMINI_API_KEY"), { status: 503, code: "GEMINI_NOT_CONFIGURED" });
   const endpoint = new URL("https://generativelanguage.googleapis.com");
-  endpoint.pathname = "/v1beta/models/" + encodeURIComponent(GEMINI_MODEL) + ":generateContent";
+  const model = GEMINI_MODEL.trim().replace(/^models\//, "");
+  const activeModel = !model || model === "gemini-2.5-flash" ? "gemini-3.8-flash" : model;
+  endpoint.pathname = "/v1beta/models/" + encodeURIComponent(activeModel) + ":generateContent";
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
     body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: "application/json" } }),
     signal: AbortSignal.timeout(90000),
   });
-  if (!response.ok) throw Object.assign(new Error("Gemini request failed"), {
-    code: "GEMINI_REQUEST_FAILED", upstreamStatus: response.status,
-  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const invalidKey = Array.isArray(payload?.error?.details)
+      && payload.error.details.some(detail => detail?.reason === "API_KEY_INVALID");
+    const messages = {
+      401: "Gemini rejected the API key.",
+      403: "The Gemini API key does not have access to this request.",
+      404: "The configured Gemini model is unavailable to this project.",
+      429: "Gemini rate limit or quota reached. Check your Google AI Studio usage.",
+      503: "Gemini is temporarily unavailable. Try again shortly.",
+    };
+    throw Object.assign(new Error("Gemini request failed"), {
+      code: "GEMINI_REQUEST_FAILED",
+      upstreamStatus: response.status,
+      model: activeModel,
+      publicMessage: invalidKey ? messages[401] : messages[response.status],
+    });
+  }
   const result = await response.json();
   return JSON.parse(result.candidates[0].content.parts.filter(part => !part.thought)
     .map(part => part.text ?? "").join(""));
@@ -143,13 +160,13 @@ app.post("/api/subjects/:subject/units/:unit/notes", async (req, res) => {
 app.use((error, req, res, _next) => {
   console.error({
     method: req.method, route: req.route?.path, name: error.name,
-    code: error.code, codeName: error.codeName, upstreamStatus: error.upstreamStatus,
+    code: error.code, codeName: error.codeName, upstreamStatus: error.upstreamStatus, model: error.model,
   });
   let message = "The request could not be completed. Check the server and try again.";
   if (error.status === 413) message = "Choose a PNG file up to 3 MB.";
   else if (error.code === "ATLAS_NOT_CONFIGURED") message = "The server is missing its MongoDB Atlas configuration.";
   else if (error.code === "GEMINI_NOT_CONFIGURED") message = "The server is missing its Gemini configuration.";
-  else if (error.code === "GEMINI_REQUEST_FAILED") message = "Gemini could not complete the request. Check the model, key, and quota.";
+  else if (error.code === "GEMINI_REQUEST_FAILED") message = error.publicMessage ?? "Gemini rejected the request. Check the runtime log for its response status.";
   else if (error.name === "MongoParseError") message = "The server's MongoDB connection string is invalid.";
   else if (error.code === 18 || error.codeName === "AuthenticationFailed") message = "MongoDB rejected the server's database credentials.";
   else if (error.code === 13 || error.codeName === "Unauthorized") message = "The MongoDB user lacks access to the classroom database.";
