@@ -176,6 +176,25 @@ function draftUnits(text) {
   return units.map(unit => ({ title: unit.title, text: unit.lines.join("\n") }));
 }
 
+const dataScienceUnits = [
+  {
+    "title": "Unit 1",
+    "text": "Data Science overview and evolution\nData Science roles, tools and applications\nData Science process overview\nDefining goals and retrieving data\nData preparation and exploration\nData modeling and presentation\nData Science ethics and doing good Data Science\nData ownership and aspects of privacy\nGetting informed consent\nThe Five Cs of Data Science\nDiversity, inclusion and future trends"
+  },
+  {
+    "title": "Unit 2",
+    "text": "Working with NumPy arrays and data types\nArray creation, indexing and slicing\nNumerical operations and array functions\nData processing using arrays\nLoading and saving arrays\nNumPy random numbers\nData manipulation with Pandas\nData wrangling and exploration\nCleaning, filtering and merging data\nReshaping and aggregating data\nReading, writing, loading and saving files with Pandas"
+  },
+  {
+    "title": "Unit 3",
+    "text": "Data visualization in Python\nUnderstanding data visualization\nBar charts and line plots\nArea plots and histograms\nPie charts and box plots\nScatter plots and time series plots\nFigures and subplots\nPlotting functions with Pandas"
+  },
+  {
+    "title": "Unit 4",
+    "text": "Data visualization using Tableau\nFilters, parameters and sets\nArithmetic and logical table calculations\nHeat maps and tree maps\nPareto charts\nInteractive dashboards\nStory interfaces and sharing your work"
+  }
+];
+
 function Dashboard({ onExpired }) {
   const [subjects, setSubjects] = useState([]);
   const [draft, setDraft] = useState(null);
@@ -246,7 +265,19 @@ function Dashboard({ onExpired }) {
         worker = await ocr.createWorker("eng");
         await worker.setParameters({ tessedit_pageseg_mode: "6" });
         const image = await prepareSyllabusImage(file).catch(() => file);
-        const { data } = await worker.recognize(image);
+        let { data } = await worker.recognize(image);
+        // Retry only uncertain reads, using the original layout and automatic segmentation.
+        if (data.confidence < 75 || !/\b(?:unit|module)\s*[-:–—. ]*\s*(?:\d+|[ivxlcdm]+)\b/i.test(data.text)) {
+          await worker.setParameters({ tessedit_pageseg_mode: "3" });
+          const alternative = await worker.recognize(file).catch(() => null);
+          if (alternative) {
+            const score = result => {
+              const headings = result.text.match(/^\s*(?:unit|module)\s*[-:–—. ]*\s*(?:\d+|[ivxlcdm]+)\b/gim) ?? [];
+              return Math.min(8, new Set(headings.map(h => h.trim().toLowerCase())).size) * 12 + (result.confidence || 0);
+            };
+            if (alternative.data.text.trim() && score(alternative.data) > score(data)) data = alternative.data;
+          }
+        }
         setDraft(previous => ({ ...previous, units: draftUnits(data.text), source: data.text.trim() }));
       } catch {
         setError("Automatic text recognition was unavailable. Enter the subtopics below to continue.");
@@ -361,7 +392,7 @@ function Dashboard({ onExpired }) {
               <p role="alert" className="error">{status.error}</p>
               <button type="button" className="notes-button" onClick={() => generateNotes(subjectId, unitId)}>Retry notes</button>
             </>}
-            {savedNotes && <Notes key={unitId} notes={savedNotes} />}
+            {savedNotes && <Notes key={unitId} notes={savedNotes} unitTitle={selectedUnit.title} topics={selectedUnit.topics} />}
           </section>
         </>}
       </main>
@@ -383,6 +414,8 @@ function Dashboard({ onExpired }) {
               <span aria-hidden="true">＋</span> Import syllabus
             </label>
             <small>PNG screenshot · Up to 3 MB</small>
+            {!draft && <button type="button" className="secondary-button" disabled={busy}
+              onClick={() => { setError(""); setDraft({ title: "Data Science", units: dataScienceUnits, source: "" }); }}>Use Data Science syllabus</button>}
           </div>
           <div className="progress-card">
             <h2>Overall progress</h2>
@@ -468,14 +501,76 @@ function BookIcon() {
   );
 }
 
-function Notes({ notes }) {
+function StudyDiagram({ notes, diagramSection, title, topics }) {
+  const svgRef = useRef(null);
+  const relations = (diagramSection ?? "").split("\n").map(line =>
+    line.replace(/^[-*] /, "").split("|").map(label => label.trim()).filter(Boolean)
+  ).filter(row => row.length === 3 && row.every(label => label.length <= 60)).slice(0, 6);
+  const headings = [...notes.matchAll(/^#{1,4}\s+(.+)$/gm)].map(match => match[1])
+    .filter(label => !/reference notes|concept map|practice|revision/i.test(label)).slice(0, 8);
+  const rows = relations.length ? relations : (headings.length ? headings : topics.slice(0, 8).map(topic => topic.title)).map(label => [title, "covers", label]);
+  if (!rows.length) return null;
+
+  function download() {
+    const blob = new Blob([new XMLSerializer().serializeToString(svgRef.current)], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = title.replace(/[^\p{L}\p{N}_-]+/gu, "-") + "-study-diagram.svg";
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // Wrap each label before sizing rows so longer syllabus headings stay readable.
+  function wrap(label, limit) {
+    const lines = [""];
+    for (const word of label.split(/\s+/)) {
+      const current = lines.length - 1;
+      if (lines[current] && lines[current].length + word.length + 1 > limit) lines.push(word);
+      else lines[current] += (lines[current] ? " " : "") + word;
+    }
+    return lines;
+  }
+  let height = 12;
+  const bands = rows.map(row => {
+    const labels = row.map((label, i) => wrap(label, i === 1 ? 17 : 23));
+    const y = height;
+    const size = Math.max(...labels.map(lines => lines.length)) * 20 + 24;
+    height += size + 10;
+    return { labels, y, size };
+  });
+  return <details className="study-diagram">
+    <summary>Study diagram</summary>
+    <div style={{ overflowX: "auto" }}>
+      <svg ref={svgRef} xmlns="http://www.w3.org/2000/svg" viewBox={"0 0 720 " + height}
+        style={{ minWidth: 540, width: "100%" }} role="img" aria-label={title + " study diagram"}>
+        <title>{title} study diagram</title>
+        <rect width="720" height={height} fill="white" />
+        {bands.map(({ labels, y, size }, index) => <g key={index}>
+          <rect x="8" y={y} width="235" height={size} rx="12" fill="#eee8fb" />
+          <rect x="477" y={y} width="235" height={size} rx="12" fill="#eee8fb" />
+          {labels.map((lines, i) => <text key={i} x={[126, 360, 594][i]}
+            y={y + size / 2 - (lines.length - 1) * 10 + 5} textAnchor="middle" fontFamily="sans-serif" fontSize="15" fill="#352344">
+            {lines.map((line, j) => <tspan key={j} x={[126, 360, 594][i]} dy={j ? 20 : 0}>{line}</tspan>)}
+          </text>)}
+          <path d={`M247 ${y + size / 2}h18 M451 ${y + size / 2}h20l-5 -4m5 4l-5 4`} fill="none" stroke="#7047aa" strokeWidth="2" />
+        </g>)}
+      </svg>
+    </div>
+    <button type="button" className="secondary-button" onClick={download}>Download diagram</button>
+  </details>;
+}
+
+function Notes({ notes, unitTitle, topics }) {
   const [query, setQuery] = useState("");
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const sections = notes.split(/\n(?=#{1,4}\s)/);
-  const visible = sections.filter(section => words.every(word => section.toLowerCase().includes(word)));
+  const diagramSection = sections.find(section => /^#{1,4} Concept map\s*$/im.test(section));
+  const visible = sections.filter(section => section !== diagramSection && words.every(word => section.toLowerCase().includes(word)));
   const headings = ["h4", "h5", "h6", "h6"];
   return (
     <article className="notes">
+      <StudyDiagram notes={notes} diagramSection={diagramSection} title={unitTitle} topics={topics} />
       <label className="notes-search">Find in these notes<input type="search" value={query} placeholder="Enter a topic or keyword" onChange={event => setQuery(event.target.value)} /></label>
       {!visible.length && <p role="status">No matching section. Try a shorter keyword.</p>}
       {visible.join("\n").split("\n").map((line, index) => {
