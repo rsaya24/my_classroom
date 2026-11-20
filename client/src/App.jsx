@@ -320,7 +320,7 @@ function Dashboard({ onExpired }) {
     });
   }
 
-  const [, subjectId, unitId] = path.match(/^#\/subjects\/([^/]+)(?:\/units\/([^/]+))?$/) ?? [];
+  const [, subjectId, unitId, notesPage] = path.match(/^#\/subjects\/([^/]+)(?:\/units\/([^/]+)(\/notes)?)?$/) ?? [];
   const selectedSubject = subjects.find(subject => subject._id === subjectId);
   const selectedUnit = selectedSubject?.units.find(unit => unit._id === unitId);
   const savedNotes = selectedUnit?.notes;
@@ -331,9 +331,9 @@ function Dashboard({ onExpired }) {
     pendingNotes.current.add(unit);
     setNotesStatus(previous => ({ ...previous, [unit]: { loading: true } }));
     try {
-      const { notes } = await request("/" + subject + "/units/" + unit + "/notes", "POST", {});
+      const { notes, notice } = await request("/" + subject + "/units/" + unit + "/notes", "POST", {});
       updateUnit(subject, unit, current => ({ ...current, notes }));
-      setNotesStatus(previous => ({ ...previous, [unit]: { done: true } }));
+      setNotesStatus(previous => ({ ...previous, [unit]: { done: true, notice } }));
     } catch (failure) {
       if (failure.status === 401) onExpired();
       setNotesStatus(previous => ({ ...previous, [unit]: { error: failure.message } }));
@@ -343,8 +343,8 @@ function Dashboard({ onExpired }) {
   }, [onExpired, updateUnit]);
 
   useEffect(() => {
-    if (selectedUnit && !savedNotes && !status) void generateNotes(subjectId, unitId);
-  }, [selectedUnit, savedNotes, status, subjectId, unitId, generateNotes]);
+    if (notesPage && selectedUnit && !savedNotes && !status) void generateNotes(subjectId, unitId);
+  }, [notesPage, selectedUnit, savedNotes, status, subjectId, unitId, generateNotes]);
 
   if (path && path !== "#/" && path !== "#") {
     const subjectLink = "#/subjects/" + subjectId;
@@ -353,6 +353,7 @@ function Dashboard({ onExpired }) {
         <nav className="study-nav" aria-label="Study navigation">
           <a href="#/">All subjects</a>
           {selectedSubject && unitId && <a href={subjectLink}>{selectedSubject.title}</a>}
+          {selectedUnit && notesPage && <a href={subjectLink + "/units/" + unitId}>Topic checklist</a>}
         </nav>
         {error && <p role="alert" className="error">{error}</p>}
         {!selectedSubject && busy && <p role="status" className="status">Loading syllabus…</p>}
@@ -363,15 +364,16 @@ function Dashboard({ onExpired }) {
           <div className="study-grid">
             {selectedSubject.units.map(unit => (
               <article className="subject study-card" key={unit._id}>
-                <h2><a href={subjectLink + "/units/" + unit._id}>{unit.title} <span aria-hidden="true">→</span></a></h2>
+                <h2><a href={subjectLink + "/units/" + unit._id + "/notes"}>{unit.title} <span aria-hidden="true">→</span></a></h2>
                 <ul>{unit.topics.map(topic => <li key={topic._id}>{topic.title}</li>)}</ul>
+                <a href={subjectLink + "/units/" + unit._id + "/notes"}>Read unit notes</a>
               </article>
             ))}
           </div>
         </>}
         {selectedUnit && <>
-          <h1 className="study-title">{selectedUnit.title}</h1>
-          <section className="subject study-card" aria-labelledby="unit-topics">
+          <h1 className="study-title">{selectedUnit.title}{notesPage ? " notes" : ""}</h1>
+          {!notesPage && <section className="subject study-card" aria-labelledby="unit-topics">
             <h2 id="unit-topics">Subtopics</h2>
             <ul className="topics">
               {selectedUnit.topics.map(topic => (
@@ -381,20 +383,21 @@ function Dashboard({ onExpired }) {
                       onChange={event => toggle(subjectId, unitId, topic._id, event.target.checked)} />
                     <span>{topic.title}</span>
                   </label>
-                  <ExamAnswer subject={subjectId} unit={unitId} topic={topic} onExpired={onExpired} />
                 </li>
               ))}
             </ul>
-          </section>
-          <section className="unit-notes" aria-labelledby="unit-notes-heading">
+            <a className="notes-button" href={subjectLink + "/units/" + unitId + "/notes"}>Read unit notes</a>
+          </section>}
+          {notesPage && <section className="unit-notes" aria-labelledby="unit-notes-heading">
             <h2 id="unit-notes-heading">Study notes</h2>
             {!savedNotes && !status?.error && <p role="status" className="status">Generating notes for this unit…</p>}
             {status?.error && <>
               <p role="alert" className="error">{status.error}</p>
               <button type="button" className="notes-button" onClick={() => generateNotes(subjectId, unitId)}>Retry notes</button>
             </>}
+            {status?.notice && <p role="status">{status.notice} <button className="secondary-button" onClick={() => generateNotes(subjectId, unitId)}>Retry expanded notes</button></p>}
             {savedNotes && <Notes key={unitId} notes={savedNotes} unitTitle={selectedUnit.title} topics={selectedUnit.topics} />}
-          </section>
+          </section>}
         </>}
       </main>
     );
@@ -560,47 +563,6 @@ function StudyDiagram({ notes, diagramSection, title, topics }) {
     </div>
     <button type="button" className="secondary-button" onClick={download}>Download diagram</button>
   </details>;
-}
-
-function ExamAnswer({ subject, unit, topic, onExpired }) {
-  const [open, setOpen] = useState(false);
-  const [notes, setNotes] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const pending = useRef(false);
-  async function toggle() {
-    if (pending.current) return;
-    if (open && !error) { setOpen(false); return; }
-    setOpen(true);
-    if (notes) return;
-    pending.current = true;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await request("/" + subject + "/units/" + unit + "/topics/" + topic._id + "/notes", "POST", {});
-      setNotes(result.notes);
-    } catch (failure) {
-      if (failure.status === 401) onExpired();
-      setError(failure.message);
-    } finally {
-      pending.current = false;
-      setBusy(false);
-    }
-  }
-  const panel = "exam-answer-" + topic._id;
-  return <div className="exam-answer">
-    <button className="secondary-button" type="button" aria-expanded={open} aria-controls={panel}
-      disabled={busy} onClick={toggle}>{busy ? "Preparing answer…" : error ? "Retry 10-mark answer" :
-        open ? "Hide 10-mark answer" : "Study 10-mark answer"}</button>
-    <div id={panel} hidden={!open}>
-      {error && <p role="alert" className="error">{error}</p>}
-      {notes && notes.split("\n").map((line, i) => {
-        const heading = line.match(/^#{1,6}\s+(.+)$/);
-        if (heading) return <h3 key={i}>{heading[1]}</h3>;
-        return line.trim() && <p key={i}>{line}</p>;
-      })}
-    </div>
-  </div>;
 }
 
 function Notes({ notes, unitTitle, topics }) {

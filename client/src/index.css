@@ -167,7 +167,5 @@ button, input { font: inherit; }
 .study-diagram[open] summary { margin-bottom: .75rem; }
 
 
-.exam-answer { margin: .45rem 0 1rem 1.65rem; }
-.exam-answer .secondary-button { font-size: .86rem; }
-.exam-answer h3 { margin: 1.1rem 0 .25rem; font-size: 1rem; color: #342445; }
-.exam-answer p { max-width: 72ch; line-height: 1.65; margin: .4rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.unit-notes .notes p { max-width: 78ch; line-height: 1.7; margin-block: .65rem; }
+.unit-notes .notes h5 { font-size: 1.22rem; margin: 1.8rem 0 .55rem; }
