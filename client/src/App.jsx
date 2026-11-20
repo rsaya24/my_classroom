@@ -118,6 +118,21 @@ function AccountForm({ onSuccess }) {
   );
 }
 
+function draftUnits(text) {
+  const heading = /^\s*(?:[#*|•]+\s*)?(?:unit|module)\s*[-:–—.|]*\s*(\d+|[ivxlcdm]+|one|two|three|four)\b[\s:–—.|-]*(.*)$/i;
+  const units = [];
+  for (const line of text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)) {
+    const match = line.match(heading);
+    if (match) {
+      units.push({ title: "Unit " + match[1].toUpperCase(), lines: match[2] ? [match[2]] : [] });
+    } else if (units.length) {
+      units.at(-1).lines.push(line);
+    }
+  }
+  if (!units.length) return [{ title: "Unit 1", text: text.trim() }];
+  return units.map(unit => ({ title: unit.title, text: unit.lines.join("\n") }));
+}
+
 function Dashboard({ onExpired }) {
   const [subjects, setSubjects] = useState([]);
   const [draft, setDraft] = useState(null);
@@ -179,7 +194,7 @@ function Dashboard({ onExpired }) {
       if (file.type !== "image/png" || file.size > 3_000_000) {
         throw new Error("Choose a PNG file up to 3 MB.");
       }
-      setDraft({ title: file.name.replace(/\.png$/i, ""), text: "" });
+      setDraft({ title: file.name.replace(/\.png$/i, ""), units: draftUnits(""), source: "" });
       setReading(true);
       let worker;
       try {
@@ -187,9 +202,9 @@ function Dashboard({ onExpired }) {
         const { default: ocr } = await import(/* @vite-ignore */ url);
         worker = await ocr.createWorker("eng");
         const { data } = await worker.recognize(file);
-        setDraft(previous => ({ ...previous, text: data.text.trim() }));
+        setDraft(previous => ({ ...previous, units: draftUnits(data.text), source: data.text.trim() }));
       } catch {
-        setError("Automatic text recognition was unavailable. Paste the syllabus text below to continue.");
+        setError("Automatic text recognition was unavailable. Enter the subtopics below to continue.");
       } finally {
         setReading(false);
         if (worker) await worker.terminate();
@@ -197,22 +212,21 @@ function Dashboard({ onExpired }) {
     });
   }
 
+  function editDraftUnit(index, changes) {
+    setDraft(previous => ({
+      ...previous,
+      units: previous.units.map((unit, i) => i === index ? { ...unit, ...changes } : unit),
+    }));
+  }
+
   function saveOutline() {
     run(async () => {
-      const units = [];
-      for (const line of draft.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)) {
-        const heading = line.match(/^unit[\s.:–—-]*(\d+|[ivxlcdm]+)\b(.*)$/i);
-        if (heading) {
-          units.push({ title: "Unit " + heading[1].toUpperCase(), topics: [] });
-          const rest = heading[2].replace(/^[\s:–—.-]+/, "");
-          if (rest) units.at(-1).topics.push(rest);
-        } else if (units.length) {
-          units.at(-1).topics.push(line);
-        }
-      }
-      if (!units.length || units.some(unit => !unit.topics.length)) {
-        throw new Error("Start each unit with a heading such as Unit 1 and enter at least one topic below it.");
-      }
+      const units = draft.units.map(unit => ({
+        title: unit.title.trim(),
+        topics: unit.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean),
+      }));
+      const incomplete = units.findIndex(unit => !unit.title || !unit.topics.length);
+      if (incomplete >= 0) throw new Error("Enter a unit title and at least one subtopic in section " + (incomplete + 1) + ".");
       const subject = await request("/outline", "POST", { title: draft.title.trim(), units });
       setSubjects(previous => [...previous, subject]);
       setDraft(null);
@@ -332,17 +346,35 @@ function Dashboard({ onExpired }) {
             <p>{completed} of {topics.length} topics completed</p>
           </div>
         </section>
-        {draft && <section className="auth-card subject" aria-label="Review syllabus">
+        {draft && <form className="subject review-form" aria-label="Review syllabus"
+          onSubmit={event => { event.preventDefault(); saveOutline(); }}>
           <h2>Review syllabus</h2>
           {reading && <p role="status">Reading your PNG…</p>}
-          <label>Subject name<input value={draft.title} disabled={busy} onChange={e => setDraft({ ...draft, title: e.target.value })} /></label>
-          <label>Units and subtopics<textarea rows={10} value={draft.text} disabled={busy}
-            placeholder={"Unit 1\\nFirst topic\\nUnit 2\\nNext topic"}
-            onChange={e => setDraft({ ...draft, text: e.target.value })} /></label>
-          <small>Start each unit with Unit 1, Unit 2, and so on. Put each subtopic on a new line.</small>
-          <button className="notes-button" disabled={busy || !draft.title.trim() || !draft.text.trim()} onClick={saveOutline}>Save subject</button>
-          <button className="secondary-button" disabled={busy} onClick={() => setDraft(null)}>Cancel</button>
-        </section>}
+          {error && <p role="alert" className="error">{error}</p>}
+          <label>Subject name<input required value={draft.title} disabled={busy}
+            onChange={e => setDraft({ ...draft, title: e.target.value })} /></label>
+          {!reading && <>
+            {draft.source && <details><summary>View text read from the PNG</summary><pre>{draft.source}</pre></details>}
+            {draft.units.map((unit, i) => (
+              <fieldset key={i}>
+                <legend>Section {i + 1}</legend>
+                <label>Unit title<input required disabled={busy} value={unit.title}
+                  onChange={e => editDraftUnit(i, { title: e.target.value })} /></label>
+                <label>Subtopics, one per line<textarea rows={4} required disabled={busy}
+                  value={unit.text} placeholder={"First subtopic\nSecond subtopic"}
+                  onChange={e => editDraftUnit(i, { text: e.target.value })} /></label>
+                {draft.units.length > 1 && <button type="button" className="secondary-button" disabled={busy}
+                  onClick={() => setDraft({ ...draft, units: draft.units.filter((_, n) => i !== n) })}>Remove unit</button>}
+              </fieldset>
+            ))}
+            <button type="button" className="secondary-button" disabled={busy}
+              onClick={() => setDraft({ ...draft, units: [...draft.units, { title: "Unit " + (draft.units.length + 1), text: "" }] })}>Add unit</button>
+            <div className="review-actions">
+              <button type="submit" className="notes-button" disabled={busy}>Save subject</button>
+              <button type="button" className="secondary-button" disabled={busy} onClick={() => { setDraft(null); setError(""); }}>Cancel</button>
+            </div>
+          </>}
+        </form>}
         <section className="metrics" aria-label="Study statistics">
           <Metric value={subjects.length} label="Subjects" />
           <Metric value={completed} label="Topics completed" />
@@ -352,8 +384,8 @@ function Dashboard({ onExpired }) {
           <div className="section-heading">
             <h2 id="subjects-heading">Your subjects</h2>
           </div>
-          {error && <p role="alert" className="error">{error}</p>}
-          {busy && <p role="status" className="status">Working…</p>}
+          {!draft && error && <p role="alert" className="error">{error}</p>}
+          {!draft && busy && <p role="status" className="status">Working…</p>}
           {!busy && !error && !subjects.length && (
             <div className="empty">
               <span className="brand-icon" aria-hidden="true"><BookIcon /></span>
