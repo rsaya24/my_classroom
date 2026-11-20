@@ -361,7 +361,7 @@ function Dashboard({ onExpired }) {
               <p role="alert" className="error">{status.error}</p>
               <button type="button" className="notes-button" onClick={() => generateNotes(subjectId, unitId)}>Retry notes</button>
             </>}
-            {savedNotes && <Notes notes={savedNotes} />}
+            {savedNotes && <Notes key={unitId} notes={savedNotes} />}
           </section>
         </>}
       </main>
@@ -469,10 +469,16 @@ function BookIcon() {
 }
 
 function Notes({ notes }) {
+  const [query, setQuery] = useState("");
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const sections = notes.split(/\n(?=#{1,4}\s)/);
+  const visible = sections.filter(section => words.every(word => section.toLowerCase().includes(word)));
   const headings = ["h4", "h5", "h6", "h6"];
   return (
     <article className="notes">
-      {notes.split("\n").map((line, index) => {
+      <label className="notes-search">Find in these notes<input type="search" value={query} placeholder="Enter a topic or keyword" onChange={event => setQuery(event.target.value)} /></label>
+      {!visible.length && <p role="status">No matching section. Try a shorter keyword.</p>}
+      {visible.join("\n").split("\n").map((line, index) => {
         const heading = line.match(/^(#{1,4})\s+(.+)$/);
         if (heading) {
           const level = heading[1].length - 1;
