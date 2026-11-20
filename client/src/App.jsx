@@ -17,15 +17,6 @@ async function requestApi(path, method = "GET", payload) {
 
 const request = (path, method, payload) => requestApi("/subjects" + path, method, payload);
 
-function readPng(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1]);
-    reader.onerror = () => reject(new Error("The PNG could not be read."));
-    reader.readAsDataURL(file);
-  });
-}
-
 function App() {
   const [account, setAccount] = useState(undefined);
   const [authError, setAuthError] = useState("");
@@ -129,6 +120,8 @@ function AccountForm({ onSuccess }) {
 
 function Dashboard({ onExpired }) {
   const [subjects, setSubjects] = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [reading, setReading] = useState(false);
   const [path, setPath] = useState(() => window.location.hash);
   const [notesStatus, setNotesStatus] = useState({});
   const pendingNotes = useRef(new Set());
@@ -186,8 +179,44 @@ function Dashboard({ onExpired }) {
       if (file.type !== "image/png" || file.size > 3_000_000) {
         throw new Error("Choose a PNG file up to 3 MB.");
       }
-      const subject = await request("", "POST", { image: await readPng(file) });
+      setDraft({ title: file.name.replace(/\.png$/i, ""), text: "" });
+      setReading(true);
+      let worker;
+      try {
+        const url = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.esm.min.js";
+        const { default: ocr } = await import(/* @vite-ignore */ url);
+        worker = await ocr.createWorker("eng");
+        const { data } = await worker.recognize(file);
+        setDraft(previous => ({ ...previous, text: data.text.trim() }));
+      } catch {
+        setError("Automatic text recognition was unavailable. Paste the syllabus text below to continue.");
+      } finally {
+        setReading(false);
+        if (worker) await worker.terminate();
+      }
+    });
+  }
+
+  function saveOutline() {
+    run(async () => {
+      const units = [];
+      for (const line of draft.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)) {
+        const heading = line.match(/^unit[\s.:–—-]*(\d+|[ivxlcdm]+)\b(.*)$/i);
+        if (heading) {
+          units.push({ title: "Unit " + heading[1].toUpperCase(), topics: [] });
+          const rest = heading[2].replace(/^[\s:–—.-]+/, "");
+          if (rest) units.at(-1).topics.push(rest);
+        } else if (units.length) {
+          units.at(-1).topics.push(line);
+        }
+      }
+      if (!units.length || units.some(unit => !unit.topics.length)) {
+        throw new Error("Start each unit with a heading such as Unit 1 and enter at least one topic below it.");
+      }
+      const subject = await request("/outline", "POST", { title: draft.title.trim(), units });
       setSubjects(previous => [...previous, subject]);
+      setDraft(null);
+      window.location.hash = "/subjects/" + subject._id;
     });
   }
 
@@ -303,6 +332,17 @@ function Dashboard({ onExpired }) {
             <p>{completed} of {topics.length} topics completed</p>
           </div>
         </section>
+        {draft && <section className="auth-card subject" aria-label="Review syllabus">
+          <h2>Review syllabus</h2>
+          {reading && <p role="status">Reading your PNG…</p>}
+          <label>Subject name<input value={draft.title} disabled={busy} onChange={e => setDraft({ ...draft, title: e.target.value })} /></label>
+          <label>Units and subtopics<textarea rows={10} value={draft.text} disabled={busy}
+            placeholder={"Unit 1\\nFirst topic\\nUnit 2\\nNext topic"}
+            onChange={e => setDraft({ ...draft, text: e.target.value })} /></label>
+          <small>Start each unit with Unit 1, Unit 2, and so on. Put each subtopic on a new line.</small>
+          <button className="notes-button" disabled={busy || !draft.title.trim() || !draft.text.trim()} onClick={saveOutline}>Save subject</button>
+          <button className="secondary-button" disabled={busy} onClick={() => setDraft(null)}>Cancel</button>
+        </section>}
         <section className="metrics" aria-label="Study statistics">
           <Metric value={subjects.length} label="Subjects" />
           <Metric value={completed} label="Topics completed" />

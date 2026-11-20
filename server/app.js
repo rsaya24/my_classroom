@@ -105,6 +105,23 @@ app.get("/api/subjects", async (req, res) => {
   res.json(await Subject.find({ owner: req.accountId }).sort({ createdAt: 1 }).lean());
 });
 
+app.post("/api/subjects/outline", async (req, res) => {
+  const { title, units } = req.body ?? {};
+  const valid = value => typeof value === "string" && value.trim().length > 0;
+  if (!valid(title) || !Array.isArray(units) || !units.length ||
+      !units.every(unit => valid(unit?.title) && Array.isArray(unit.topics) &&
+        unit.topics.length && unit.topics.every(valid))) {
+    return res.status(400).json({ error: "Enter a subject name, unit headings, and topics." });
+  }
+  const subject = await Subject.create({
+    owner: req.accountId, title: title.trim(),
+    units: units.map(unit => ({
+      title: unit.title.trim(), topics: unit.topics.map(topic => ({ title: topic.trim() })),
+    })),
+  });
+  res.status(201).json(subject);
+});
+
 app.post("/api/subjects", async (req, res) => {
   const { image } = req.body ?? {};
   if (typeof image !== "string" || image.length > 4_000_000 ||
