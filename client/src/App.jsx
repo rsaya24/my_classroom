@@ -118,11 +118,54 @@ function AccountForm({ onSuccess }) {
   );
 }
 
+async function prepareSyllabusImage(file) {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  // Bound the OCR image size on phones and enlarge small screenshot text.
+  const scale = Math.min(3, 3200 / Math.max(bitmap.width, bitmap.height));
+  canvas.width = Math.max(1, Math.round(bitmap.width * Math.min(1, scale)));
+  canvas.height = Math.max(1, Math.round(bitmap.height * Math.min(1, scale)));
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const { width, height } = canvas;
+  const image = ctx.getImageData(0, 0, width, height);
+  const rows = new Uint32Array(height);
+  const columns = new Uint32Array(width);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const dark = image.data[i] * .299 + image.data[i + 1] * .587 + image.data[i + 2] * .114 < 115;
+      if (dark) { rows[y]++; columns[x]++; }
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (rows[y] > width * .65 || columns[x] > height * .38) {
+        const i = (y * width + x) * 4;
+        image.data.fill(255, i, i + 4);
+      }
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  if (scale <= 1) return canvas;
+  const enlarged = document.createElement("canvas");
+  enlarged.width = Math.round(width * scale);
+  enlarged.height = Math.round(height * scale);
+  const output = enlarged.getContext("2d");
+  output.imageSmoothingQuality = "high";
+  output.drawImage(canvas, 0, 0, enlarged.width, enlarged.height);
+  return enlarged;
+}
+
 function draftUnits(text) {
   const heading = /^\s*(?:[#*|•]+\s*)?(?:unit|module)\s*[-:–—.|]*\s*(\d+|[ivxlcdm]+|one|two|three|four)\b[\s:–—.|-]*(.*)$/i;
   const units = [];
   for (const line of text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)) {
-    const match = line.match(heading);
+    if (/^\d{1,3}$/.test(line)) continue;
+    const match = line.replace(/\s*[|:]?\s*\d{1,2}\s*(?:hours?|hrs?)\s*[|.]?$/i, "").match(heading);
     if (match) {
       units.push({ title: "Unit " + match[1].toUpperCase(), lines: match[2] ? [match[2]] : [] });
     } else if (units.length) {
@@ -201,7 +244,9 @@ function Dashboard({ onExpired }) {
         const url = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.esm.min.js";
         const { default: ocr } = await import(/* @vite-ignore */ url);
         worker = await ocr.createWorker("eng");
-        const { data } = await worker.recognize(file);
+        await worker.setParameters({ tessedit_pageseg_mode: "6" });
+        const image = await prepareSyllabusImage(file).catch(() => file);
+        const { data } = await worker.recognize(image);
         setDraft(previous => ({ ...previous, units: draftUnits(data.text), source: data.text.trim() }));
       } catch {
         setError("Automatic text recognition was unavailable. Enter the subtopics below to continue.");
