@@ -12,6 +12,6 @@
     "build": "npm run build --workspace client -- --outDir ../dist --emptyOutDir"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": "22.x"
   }
 }
