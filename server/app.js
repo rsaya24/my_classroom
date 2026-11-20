@@ -18,7 +18,7 @@ subjectSchema.index({ owner: 1, createdAt: 1 });
 const Subject = mongoose.model("Subject", subjectSchema);
 
 async function generate(parts) {
-  if (!GEMINI_API_KEY) throw Object.assign(new Error("Missing GEMINI_API_KEY"), { status: 503 });
+  if (!GEMINI_API_KEY) throw Object.assign(new Error("Missing GEMINI_API_KEY"), { status: 503, code: "GEMINI_NOT_CONFIGURED" });
   const endpoint = new URL("https://generativelanguage.googleapis.com");
   endpoint.pathname = "/v1beta/models/" + encodeURIComponent(GEMINI_MODEL) + ":generateContent";
   const response = await fetch(endpoint, {
@@ -27,7 +27,9 @@ async function generate(parts) {
     body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: "application/json" } }),
     signal: AbortSignal.timeout(90000),
   });
-  if (!response.ok) throw new Error("Gemini returned status " + response.status);
+  if (!response.ok) throw Object.assign(new Error("Gemini request failed"), {
+    code: "GEMINI_REQUEST_FAILED", upstreamStatus: response.status,
+  });
   const result = await response.json();
   return JSON.parse(result.candidates[0].content.parts.filter(part => !part.thought)
     .map(part => part.text ?? "").join(""));
@@ -38,7 +40,7 @@ app.use(express.json({ limit: "4.1mb" }));
 
 let connection;
 export function connectDatabase() {
-  if (!MONGODB_URI) throw Object.assign(new Error("Missing MONGODB_URI"), { status: 503 });
+  if (!MONGODB_URI) throw Object.assign(new Error("Missing MONGODB_URI"), { status: 503, code: "ATLAS_NOT_CONFIGURED" });
   connection ??= mongoose.connect(MONGODB_URI, { dbName: MONGODB_DB, serverSelectionTimeoutMS: 7000 }).catch(error => {
     connection = undefined;
     throw error;
@@ -138,14 +140,23 @@ app.post("/api/subjects/:subject/units/:unit/notes", async (req, res) => {
   res.json({ notes: result.notes });
 });
 
-app.use((error, _req, res, _next) => {
-  console.error({ name: error.name, code: error.code, codeName: error.codeName });
-  res.status(error.status ?? 502).json({
-    error: error.status === 413 ? "Choose a PNG file up to 3 MB." :
-      error.name === "MongoServerError" || error.name === "MongooseServerSelectionError" ?
-        "Atlas is unavailable. Check the database credentials, access list, and database permissions." :
-        "The request could not be completed. Check the server and try again.",
+app.use((error, req, res, _next) => {
+  console.error({
+    method: req.method, route: req.route?.path, name: error.name,
+    code: error.code, codeName: error.codeName, upstreamStatus: error.upstreamStatus,
   });
+  let message = "The request could not be completed. Check the server and try again.";
+  if (error.status === 413) message = "Choose a PNG file up to 3 MB.";
+  else if (error.code === "ATLAS_NOT_CONFIGURED") message = "The server is missing its MongoDB Atlas configuration.";
+  else if (error.code === "GEMINI_NOT_CONFIGURED") message = "The server is missing its Gemini configuration.";
+  else if (error.code === "GEMINI_REQUEST_FAILED") message = "Gemini could not complete the request. Check the model, key, and quota.";
+  else if (error.name === "MongoParseError") message = "The server's MongoDB connection string is invalid.";
+  else if (error.code === 18 || error.codeName === "AuthenticationFailed") message = "MongoDB rejected the server's database credentials.";
+  else if (error.code === 13 || error.codeName === "Unauthorized") message = "The MongoDB user lacks access to the classroom database.";
+  else if (error.name === "MongoServerError" || error.name === "MongooseServerSelectionError") {
+    message = "Atlas is unavailable. Check the database credentials, access list, and database permissions.";
+  }
+  res.status(error.status ?? 502).json({ error: message });
 });
 
 export default app;
