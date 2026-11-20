@@ -31,6 +31,8 @@ async function generate(parts) {
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
+    const providerMessage = typeof payload?.error?.message === "string"
+      ? payload.error.message.slice(0, 240) : "";
     const invalidKey = Array.isArray(payload?.error?.details)
       && payload.error.details.some(detail => detail?.reason === "API_KEY_INVALID");
     const messages = {
@@ -44,12 +46,33 @@ async function generate(parts) {
       code: "GEMINI_REQUEST_FAILED",
       upstreamStatus: response.status,
       model: activeModel,
-      publicMessage: invalidKey ? messages[401] : messages[response.status],
+      publicMessage: invalidKey ? messages[401] :
+        messages[response.status] ?? (providerMessage
+          ? "Gemini rejected the syllabus request: " + providerMessage
+          : "Gemini rejected the syllabus request (HTTP " + response.status + ")."),
     });
   }
   const result = await response.json();
-  return JSON.parse(result.candidates[0].content.parts.filter(part => !part.thought)
-    .map(part => part.text ?? "").join(""));
+  const candidate = result.candidates?.[0];
+  const responseText = candidate?.content?.parts
+    ?.filter(part => !part.thought)
+    .map(part => part.text ?? "")
+    .join("");
+  if (!responseText) {
+    throw Object.assign(new Error("Gemini returned no syllabus content"), {
+      code: "GEMINI_EMPTY_RESPONSE",
+      finishReason: candidate?.finishReason,
+      blockReason: result.promptFeedback?.blockReason,
+    });
+  }
+  try {
+    return JSON.parse(responseText);
+  } catch {
+    throw Object.assign(new Error("Gemini returned an invalid syllabus outline"), {
+      code: "GEMINI_INVALID_JSON",
+      finishReason: candidate?.finishReason,
+    });
+  }
 }
 
 const app = express();
@@ -160,13 +183,20 @@ app.post("/api/subjects/:subject/units/:unit/notes", async (req, res) => {
 app.use((error, req, res, _next) => {
   console.error({
     method: req.method, route: req.route?.path, name: error.name,
-    code: error.code, codeName: error.codeName, upstreamStatus: error.upstreamStatus, model: error.model,
+    code: error.code, codeName: error.codeName, upstreamStatus: error.upstreamStatus,
+    model: error.model, finishReason: error.finishReason, blockReason: error.blockReason,
   });
   let message = "The request could not be completed. Check the server and try again.";
   if (error.status === 413) message = "Choose a PNG file up to 3 MB.";
   else if (error.code === "ATLAS_NOT_CONFIGURED") message = "The server is missing its MongoDB Atlas configuration.";
   else if (error.code === "GEMINI_NOT_CONFIGURED") message = "The server is missing its Gemini configuration.";
-  else if (error.code === "GEMINI_REQUEST_FAILED") message = error.publicMessage ?? "Gemini rejected the request. Check the runtime log for its response status.";
+  else if (error.code === "GEMINI_REQUEST_FAILED") message = error.publicMessage ?? "Gemini rejected the request.";
+  else if (error.code === "GEMINI_EMPTY_RESPONSE") message = error.blockReason
+    ? "Gemini blocked this syllabus image. Try a different screenshot."
+    : "Gemini returned no syllabus outline. Try uploading a clearer PNG.";
+  else if (error.code === "GEMINI_INVALID_JSON") message = "Gemini could not format the syllabus outline. Please try the upload again.";
+  else if (error.name === "TimeoutError" || error.name === "AbortError") message = "Syllabus processing took too long. Try a smaller PNG.";
+  else if (error.name === "TypeError" && error.message.toLowerCase().includes("fetch")) message = "The app could not reach Gemini. Check the API connection and retry.";
   else if (error.name === "MongoParseError") message = "The server's MongoDB connection string is invalid.";
   else if (error.code === 18 || error.codeName === "AuthenticationFailed") message = "MongoDB rejected the server's database credentials.";
   else if (error.code === 13 || error.codeName === "Unauthorized") message = "The MongoDB user lacks access to the classroom database.";
