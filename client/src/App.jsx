@@ -129,6 +129,18 @@ function AccountForm({ onSuccess }) {
 
 function Dashboard({ onExpired }) {
   const [subjects, setSubjects] = useState([]);
+  const [path, setPath] = useState(() => window.location.hash);
+  const [notesStatus, setNotesStatus] = useState({});
+  const pendingNotes = useRef(new Set());
+
+  useEffect(() => {
+    function navigate() {
+      setPath(window.location.hash);
+      window.scrollTo(0, 0);
+    }
+    window.addEventListener("hashchange", navigate);
+    return () => window.removeEventListener("hashchange", navigate);
+  }, []);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
 
@@ -159,12 +171,12 @@ function Dashboard({ onExpired }) {
     }
   }
 
-  function updateUnit(subjectId, unitId, update) {
+  const updateUnit = useCallback((subjectId, unitId, update) => {
     setSubjects(previous => previous.map(subject => subject._id !== subjectId ? subject : {
       ...subject,
       units: subject.units.map(unit => unit._id === unitId ? update(unit) : unit),
     }));
-  }
+  }, []);
 
   function upload(event) {
     const file = event.target.files[0];
@@ -187,6 +199,85 @@ function Dashboard({ onExpired }) {
         topics: current.topics.map(item => item._id === topic ? { ...item, completed } : item),
       }));
     });
+  }
+
+  const [, subjectId, unitId] = path.match(/^#\/subjects\/([^/]+)(?:\/units\/([^/]+))?$/) ?? [];
+  const selectedSubject = subjects.find(subject => subject._id === subjectId);
+  const selectedUnit = selectedSubject?.units.find(unit => unit._id === unitId);
+  const savedNotes = selectedUnit?.notes;
+  const status = notesStatus[unitId];
+
+  const generateNotes = useCallback(async (subject, unit) => {
+    if (pendingNotes.current.has(unit)) return;
+    pendingNotes.current.add(unit);
+    setNotesStatus(previous => ({ ...previous, [unit]: { loading: true } }));
+    try {
+      const { notes } = await request("/" + subject + "/units/" + unit + "/notes", "POST", {});
+      updateUnit(subject, unit, current => ({ ...current, notes }));
+      setNotesStatus(previous => ({ ...previous, [unit]: { done: true } }));
+    } catch (failure) {
+      if (failure.status === 401) onExpired();
+      setNotesStatus(previous => ({ ...previous, [unit]: { error: failure.message } }));
+    } finally {
+      pendingNotes.current.delete(unit);
+    }
+  }, [onExpired, updateUnit]);
+
+  useEffect(() => {
+    if (selectedUnit && !savedNotes && !status) void generateNotes(subjectId, unitId);
+  }, [selectedUnit, savedNotes, status, subjectId, unitId, generateNotes]);
+
+  if (path && path !== "#/" && path !== "#") {
+    const subjectLink = "#/subjects/" + subjectId;
+    return (
+      <main className="frame dashboard">
+        <nav className="study-nav" aria-label="Study navigation">
+          <a href="#/">All subjects</a>
+          {selectedSubject && unitId && <a href={subjectLink}>{selectedSubject.title}</a>}
+        </nav>
+        {error && <p role="alert" className="error">{error}</p>}
+        {!selectedSubject && busy && <p role="status" className="status">Loading syllabus…</p>}
+        {(!selectedSubject || (unitId && !selectedUnit)) && !busy && !error &&
+          <p role="status">This subject or unit could not be found.</p>}
+        {selectedSubject && !unitId && <>
+          <h1 className="study-title">{selectedSubject.title}</h1>
+          <div className="study-grid">
+            {selectedSubject.units.map(unit => (
+              <article className="subject study-card" key={unit._id}>
+                <h2><a href={subjectLink + "/units/" + unit._id}>{unit.title} <span aria-hidden="true">→</span></a></h2>
+                <ul>{unit.topics.map(topic => <li key={topic._id}>{topic.title}</li>)}</ul>
+              </article>
+            ))}
+          </div>
+        </>}
+        {selectedUnit && <>
+          <h1 className="study-title">{selectedUnit.title}</h1>
+          <section className="subject study-card" aria-labelledby="unit-topics">
+            <h2 id="unit-topics">Subtopics</h2>
+            <ul className="topics">
+              {selectedUnit.topics.map(topic => (
+                <li key={topic._id}>
+                  <label className="topic">
+                    <input type="checkbox" checked={topic.completed} disabled={busy}
+                      onChange={event => toggle(subjectId, unitId, topic._id, event.target.checked)} />
+                    <span>{topic.title}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </section>
+          <section className="unit-notes" aria-labelledby="unit-notes-heading">
+            <h2 id="unit-notes-heading">Study notes</h2>
+            {!savedNotes && !status?.error && <p role="status" className="status">Generating notes for this unit…</p>}
+            {status?.error && <>
+              <p role="alert" className="error">{status.error}</p>
+              <button type="button" className="notes-button" onClick={() => generateNotes(subjectId, unitId)}>Retry notes</button>
+            </>}
+            {savedNotes && <Notes notes={savedNotes} />}
+          </section>
+        </>}
+      </main>
+    );
   }
 
   const topics = subjects.flatMap(subject => subject.units.flatMap(unit => unit.topics));
@@ -232,78 +323,18 @@ function Dashboard({ onExpired }) {
           )}
           {subjects.map(subject => (
             <article key={subject._id} className="subject">
-              <header className="subject-heading">
+              <a className="subject-heading subject-link" href={"#/subjects/" + subject._id}>
                 <span className="brand-icon" aria-hidden="true"><BookIcon /></span>
                 <div>
                   <h3>{subject.title}</h3>
                   <p>{subject.units.length} {subject.units.length === 1 ? "unit" : "units"}</p>
                 </div>
-              </header>
-              {subject.units.map(unit => (
-                <StudyUnit key={unit._id} unit={unit} busy={busy}
-                  onTopicChange={(topic, checked) => toggle(subject._id, unit._id, topic, checked)}
-                  onLoadNotes={async () => {
-                    const { notes } = await request("/" + subject._id + "/units/" + unit._id + "/notes", "POST", {});
-                    updateUnit(subject._id, unit._id, current => ({ ...current, notes }));
-                  }}
-                  onExpired={onExpired} />
-              ))}
+                <span className="subject-arrow" aria-hidden="true">→</span>
+              </a>
             </article>
           ))}
         </section>
       </main>
-  );
-}
-
-function StudyUnit({ unit, busy, onTopicChange, onLoadNotes, onExpired }) {
-  const requested = useRef(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function loadNotes() {
-    if (requested.current || unit.notes) return;
-    requested.current = true;
-    setLoading(true);
-    setError("");
-    try {
-      await onLoadNotes();
-    } catch (failure) {
-      requested.current = false;
-      if (failure.status === 401) onExpired();
-      else setError(failure.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <details className="unit" onToggle={event => {
-      if (event.currentTarget.open && !error) void loadNotes();
-    }}>
-      <summary>
-        <span className="unit-title">{unit.title}</span>
-        <span className="unit-count">{unit.topics.filter(topic => topic.completed).length} / {unit.topics.length}</span>
-      </summary>
-      <div className="unit-body">
-        <ul className="topics">
-          {unit.topics.map(topic => (
-            <li key={topic._id}>
-              <label className="topic">
-                <input type="checkbox" checked={topic.completed} disabled={busy}
-                  onChange={event => onTopicChange(topic._id, event.target.checked)} />
-                <span>{topic.title}</span>
-              </label>
-            </li>
-          ))}
-        </ul>
-        {loading && <p role="status" className="status">Generating notes for this unit…</p>}
-        {error && <>
-          <p role="alert" className="error">{error}</p>
-          <button type="button" className="notes-button" onClick={loadNotes}>Retry notes</button>
-        </>}
-        {unit.notes && <Notes notes={unit.notes} />}
-      </div>
-    </details>
   );
 }
 
