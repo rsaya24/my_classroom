@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 async function requestApi(path, method = "GET", payload) {
   const response = await fetch("/api" + path, {
@@ -189,13 +189,6 @@ function Dashboard({ onExpired }) {
     });
   }
 
-  function generateNotes(subject, unit) {
-    run(async () => {
-      const { notes } = await request("/" + subject + "/units/" + unit + "/notes", "POST", {});
-      updateUnit(subject, unit, current => ({ ...current, notes }));
-    });
-  }
-
   const topics = subjects.flatMap(subject => subject.units.flatMap(unit => unit.topics));
   const completed = topics.filter(topic => topic.completed).length;
   const progress = topics.length ? Math.round(100 * completed / topics.length) : 0;
@@ -247,35 +240,70 @@ function Dashboard({ onExpired }) {
                 </div>
               </header>
               {subject.units.map(unit => (
-                <details key={unit._id} className="unit">
-                  <summary>
-                    <span className="unit-title">{unit.title}</span>
-                    <span className="unit-count">
-                      {unit.topics.filter(topic => topic.completed).length} / {unit.topics.length}
-                    </span>
-                  </summary>
-                  <div className="unit-body">
-                    <ul className="topics">
-                      {unit.topics.map(topic => (
-                        <li key={topic._id}>
-                          <label className="topic">
-                            <input type="checkbox" checked={topic.completed} disabled={busy}
-                              onChange={event => toggle(subject._id, unit._id, topic._id, event.target.checked)} />
-                            <span>{topic.title}</span>
-                          </label>
-                        </li>
-                      ))}
-                    </ul>
-                    {unit.notes ? <Notes notes={unit.notes} /> :
-                      <button className="notes-button" disabled={busy}
-                        onClick={() => generateNotes(subject._id, unit._id)}>Generate unit notes</button>}
-                  </div>
-                </details>
+                <StudyUnit key={unit._id} unit={unit} busy={busy}
+                  onTopicChange={(topic, checked) => toggle(subject._id, unit._id, topic, checked)}
+                  onLoadNotes={async () => {
+                    const { notes } = await request("/" + subject._id + "/units/" + unit._id + "/notes", "POST", {});
+                    updateUnit(subject._id, unit._id, current => ({ ...current, notes }));
+                  }}
+                  onExpired={onExpired} />
               ))}
             </article>
           ))}
         </section>
       </main>
+  );
+}
+
+function StudyUnit({ unit, busy, onTopicChange, onLoadNotes, onExpired }) {
+  const requested = useRef(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function loadNotes() {
+    if (requested.current || unit.notes) return;
+    requested.current = true;
+    setLoading(true);
+    setError("");
+    try {
+      await onLoadNotes();
+    } catch (failure) {
+      requested.current = false;
+      if (failure.status === 401) onExpired();
+      else setError(failure.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <details className="unit" onToggle={event => {
+      if (event.currentTarget.open && !error) void loadNotes();
+    }}>
+      <summary>
+        <span className="unit-title">{unit.title}</span>
+        <span className="unit-count">{unit.topics.filter(topic => topic.completed).length} / {unit.topics.length}</span>
+      </summary>
+      <div className="unit-body">
+        <ul className="topics">
+          {unit.topics.map(topic => (
+            <li key={topic._id}>
+              <label className="topic">
+                <input type="checkbox" checked={topic.completed} disabled={busy}
+                  onChange={event => onTopicChange(topic._id, event.target.checked)} />
+                <span>{topic.title}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+        {loading && <p role="status" className="status">Generating notes for this unit…</p>}
+        {error && <>
+          <p role="alert" className="error">{error}</p>
+          <button type="button" className="notes-button" onClick={loadNotes}>Retry notes</button>
+        </>}
+        {unit.notes && <Notes notes={unit.notes} />}
+      </div>
+    </details>
   );
 }
 
