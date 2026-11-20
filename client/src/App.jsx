@@ -381,6 +381,7 @@ function Dashboard({ onExpired }) {
                       onChange={event => toggle(subjectId, unitId, topic._id, event.target.checked)} />
                     <span>{topic.title}</span>
                   </label>
+                  <ExamAnswer subject={subjectId} unit={unitId} topic={topic} onExpired={onExpired} />
                 </li>
               ))}
             </ul>
@@ -561,6 +562,47 @@ function StudyDiagram({ notes, diagramSection, title, topics }) {
   </details>;
 }
 
+function ExamAnswer({ subject, unit, topic, onExpired }) {
+  const [open, setOpen] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pending = useRef(false);
+  async function toggle() {
+    if (pending.current) return;
+    if (open && !error) { setOpen(false); return; }
+    setOpen(true);
+    if (notes) return;
+    pending.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await request("/" + subject + "/units/" + unit + "/topics/" + topic._id + "/notes", "POST", {});
+      setNotes(result.notes);
+    } catch (failure) {
+      if (failure.status === 401) onExpired();
+      setError(failure.message);
+    } finally {
+      pending.current = false;
+      setBusy(false);
+    }
+  }
+  const panel = "exam-answer-" + topic._id;
+  return <div className="exam-answer">
+    <button className="secondary-button" type="button" aria-expanded={open} aria-controls={panel}
+      disabled={busy} onClick={toggle}>{busy ? "Preparing answer…" : error ? "Retry 10-mark answer" :
+        open ? "Hide 10-mark answer" : "Study 10-mark answer"}</button>
+    <div id={panel} hidden={!open}>
+      {error && <p role="alert" className="error">{error}</p>}
+      {notes && notes.split("\n").map((line, i) => {
+        const heading = line.match(/^#{1,6}\s+(.+)$/);
+        if (heading) return <h3 key={i}>{heading[1]}</h3>;
+        return line.trim() && <p key={i}>{line}</p>;
+      })}
+    </div>
+  </div>;
+}
+
 function Notes({ notes, unitTitle, topics }) {
   const [query, setQuery] = useState("");
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -587,3 +629,4 @@ function Notes({ notes, unitTitle, topics }) {
 }
 
 export default App;
+

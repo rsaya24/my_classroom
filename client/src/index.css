@@ -165,3 +165,9 @@ button, input { font: inherit; }
 .study-diagram { margin: 1rem 0; padding: .85rem 1rem; border: 1px solid #ded6ea; border-radius: 12px; }
 .study-diagram summary { cursor: pointer; font-weight: 650; color: #493264; }
 .study-diagram[open] summary { margin-bottom: .75rem; }
+
+
+.exam-answer { margin: .45rem 0 1rem 1.65rem; }
+.exam-answer .secondary-button { font-size: .86rem; }
+.exam-answer h3 { margin: 1.1rem 0 .25rem; font-size: 1rem; color: #342445; }
+.exam-answer p { max-width: 72ch; line-height: 1.65; margin: .4rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }

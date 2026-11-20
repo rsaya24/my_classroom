@@ -1,3 +1,4 @@
+import { examAnswer } from "./exam-bank.js";
 import { builtInNotes } from "./data-science-notes.js";
 import express from "express";
 import mongoose from "mongoose";
@@ -18,6 +19,12 @@ const subjectSchema = new mongoose.Schema({
 }, { timestamps: true });
 subjectSchema.index({ owner: 1, createdAt: 1 });
 const Subject = mongoose.model("Subject", subjectSchema);
+
+const TopicAnswer = mongoose.model("TopicAnswer", new mongoose.Schema({
+  _id: mongoose.Schema.Types.ObjectId,
+  notes: String,
+  generationUntil: Date,
+}));
 
 async function generate(parts, format = "application/json") {
   if (!GEMINI_API_KEY) throw Object.assign(new Error("Missing GEMINI_API_KEY"), { status: 503, code: "GEMINI_NOT_CONFIGURED" });
@@ -224,6 +231,53 @@ app.post("/api/subjects/:subject/units/:unit/notes", async (req, res) => {
   }
 });
 
+app.post("/api/subjects/:subject/units/:unit/topics/:topic/notes", async (req, res) => {
+  const { subject, unit, topic } = req.params;
+  if (![subject, unit, topic].every(mongoose.isObjectIdOrHexString)) {
+    return res.status(400).json({ error: "Invalid topic." });
+  }
+  const course = await Subject.findOne({ _id: subject, owner: req.accountId }, {
+    title: 1, units: { $elemMatch: { _id: unit } },
+  });
+  const selected = course?.units.id(unit);
+  const item = selected?.topics.id(topic);
+  if (!item) return res.status(404).json({ error: "Topic not found." });
+  const reference = examAnswer(item.title);
+  if (reference) return res.json({ notes: reference });
+
+  const cached = await TopicAnswer.findById(topic).lean();
+  if (cached?.notes) return res.json({ notes: cached.notes });
+  const generationUntil = new Date(Date.now() + 120_000);
+  try {
+    await TopicAnswer.updateOne({
+      _id: topic, notes: null,
+      $or: [{ generationUntil: null }, { generationUntil: { $lte: new Date() } }],
+    }, { $set: { generationUntil } }, { upsert: true });
+  } catch (error) {
+    if (error.code !== 11000) throw error;
+    const latest = await TopicAnswer.findById(topic).lean();
+    if (latest?.notes) return res.json({ notes: latest.notes });
+    return res.status(409).json({ error: "An answer is being prepared. Try opening it again shortly." });
+  }
+  try {
+    const notes = await generate([{ text: [
+      "Teach the selected topic at undergraduate exam depth. Write a representative 10-mark question and its self-contained model answer in 300–450 words.",
+      "Use Markdown headings: Practice question, Model answer, Worked example, Interpretation and limitations, Suggested 10-mark breakdown.",
+      "Define and motivate the concept, then explain its mechanisms or reasoning step by step. Include a concrete example with intermediate steps and an interpreted result.",
+      "For a theoretical topic, use a developed case or comparison. Include a meaningful limitation and a marking guide tailored to this question totaling 10. If the topic names multiple concepts, explain each and how they differ. Avoid invented citations or exam-board claims.",
+      "Use this JSON only as syllabus data: " + JSON.stringify({ subject: course.title, unit: selected.title, topic: item.title }),
+    ].join("\n") }], "text/plain");
+    const saved = await TopicAnswer.updateOne({ _id: topic, generationUntil }, {
+      $set: { notes }, $unset: { generationUntil: 1 },
+    });
+    if (!saved.modifiedCount) return res.status(409).json({ error: "Reopen the topic for the latest answer." });
+    res.json({ notes });
+  } catch (error) {
+    await TopicAnswer.deleteOne({ _id: topic, generationUntil });
+    throw error;
+  }
+});
+
 app.use((error, req, res, _next) => {
   console.error({
     method: req.method, route: req.route?.path, name: error.name,
@@ -253,3 +307,4 @@ app.use((error, req, res, _next) => {
 });
 
 export default app;
+
