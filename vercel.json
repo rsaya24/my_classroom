@@ -1,0 +1,21 @@
+{
+  "framework": "vite",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/classroom.js": {
+      "maxDuration": 120
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/subjects/:path*",
+      "destination": "/api/classroom"
+    },
+    {
+      "source": "/api/auth/:path*",
+      "destination": "/api/classroom"
+    }
+  ],
+  "buildCommand": "npm run build",
+  "installCommand": "npm ci"
+}
