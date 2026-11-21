@@ -396,7 +396,7 @@ function Dashboard({ onExpired }) {
               <button type="button" className="notes-button" onClick={() => generateNotes(subjectId, unitId)}>Retry notes</button>
             </>}
             {status?.notice && <p role="status">{status.notice} <button className="secondary-button" onClick={() => generateNotes(subjectId, unitId)}>Retry expanded notes</button></p>}
-            {savedNotes && <Notes key={unitId} notes={savedNotes} unitTitle={selectedUnit.title} topics={selectedUnit.topics} />}
+            {savedNotes && <Notes key={unitId} notes={savedNotes} subjectTitle={selectedSubject.title} unitTitle={selectedUnit.title} topics={selectedUnit.topics} />}
           </section>}
         </>}
       </main>
@@ -505,14 +505,37 @@ function BookIcon() {
   );
 }
 
-function StudyDiagram({ notes, diagramSection, title, topics }) {
-  const svgRef = useRef(null);
+const syllabusMaps = [
+  ["Data Science process overview", [
+    ["Decision to support", "defines", "Measurable goal"], ["Measurable goal", "guides", "Data collection"],
+    ["Raw observations", "are cleaned into", "Analysis-ready data"], ["Held-out data", "evaluates", "Model predictions"],
+    ["Evaluation results", "inform", "Decision"],
+  ]],
+  ["Working with NumPy arrays and data types", [
+    ["Raw measurements", "become", "Typed NumPy arrays"], ["Boolean masks", "select", "Valid readings"],
+    ["Clean arrays", "support", "Axis-wise summaries"], ["pandas merge", "joins on", "Shared keys"],
+    ["Group by category", "produces", "Group summaries"],
+  ]],
+  ["Understanding data visualization", [
+    ["Category comparison", "uses", "Bar chart"], ["Numeric distribution", "uses", "Histogram"],
+    ["Two numeric variables", "use", "Scatter plot"], ["Ordered time points", "use", "Line plot"],
+    ["Median and spread", "appear in", "Box plot"],
+  ]],
+  ["Data visualization using Tableau", [
+    ["Dimensions", "group", "Source records"], ["Measures", "aggregate into", "Values per mark"],
+    ["Worksheets", "combine into", "Dashboard"], ["Filter actions", "restrict", "Target views"],
+    ["Story points", "sequence", "Views and findings"],
+  ]],
+];
+
+function StudyDiagram({ notes, diagramSection, title, topics, svgRef }) {
   const relations = (diagramSection ?? "").split("\n").map(line =>
     line.replace(/^[-*] /, "").split("|").map(label => label.trim()).filter(Boolean)
   ).filter(row => row.length === 3 && row.every(label => label.length <= 60)).slice(0, 6);
   const headings = [...notes.matchAll(/^#{1,4}\s+(.+)$/gm)].map(match => match[1])
     .filter(label => !/reference notes|concept map|practice|revision/i.test(label)).slice(0, 8);
-  const rows = relations.length ? relations : (headings.length ? headings : topics.slice(0, 8).map(topic => topic.title)).map(label => [title, "covers", label]);
+  const syllabusMap = syllabusMaps.find(([heading]) => headings.includes(heading))?.[1];
+  const rows = relations.length ? relations : syllabusMap ?? (headings.length ? headings : topics.slice(0, 8).map(topic => topic.title)).map(label => [title, "covers", label]);
   if (!rows.length) return null;
 
   function download() {
@@ -543,12 +566,12 @@ function StudyDiagram({ notes, diagramSection, title, topics }) {
     height += size + 10;
     return { labels, y, size };
   });
-  return <details className="study-diagram">
+  return <details open className="study-diagram">
     <summary>Study diagram</summary>
     <div style={{ overflowX: "auto" }}>
       <svg ref={svgRef} xmlns="http://www.w3.org/2000/svg" viewBox={"0 0 720 " + height}
         style={{ minWidth: 540, width: "100%" }} role="img" aria-label={title + " study diagram"}>
-        <title>{title} study diagram</title>
+        <title>{title + " study diagram"}</title>
         <rect width="720" height={height} fill="white" />
         {bands.map(({ labels, y, size }, index) => <g key={index}>
           <rect x="8" y={y} width="235" height={size} rx="12" fill="#eee8fb" />
@@ -565,16 +588,41 @@ function StudyDiagram({ notes, diagramSection, title, topics }) {
   </details>;
 }
 
-function Notes({ notes, unitTitle, topics }) {
+function Notes({ notes, subjectTitle, unitTitle, topics }) {
+  const svgRef = useRef(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
   const [query, setQuery] = useState("");
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const sections = notes.split(/\n(?=#{1,4}\s)/);
   const diagramSection = sections.find(section => /^#{1,4} Concept map\s*$/im.test(section));
-  const visible = sections.filter(section => section !== diagramSection && words.every(word => section.toLowerCase().includes(word)));
+  const chapter = sections.filter(section => section !== diagramSection);
+  const visible = chapter.filter(section => words.every(word => section.toLowerCase().includes(word)));
+  async function downloadPdf() {
+    setExporting(true);
+    setExportError("");
+    try {
+      const { unitPdf, diagramPng } = await import("./unitPdf.js");
+      const title = subjectTitle + " — " + unitTitle;
+      const bytes = await unitPdf(title, chapter, await diagramPng(svgRef.current));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = title.replace(/[^\p{L}\p{N}_-]+/gu, "-") + "-notes.pdf";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch {
+      setExportError("The PDF could not be created. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  }
   const headings = ["h4", "h5", "h6", "h6"];
   return (
     <article className="notes">
-      <StudyDiagram notes={notes} diagramSection={diagramSection} title={unitTitle} topics={topics} />
       <label className="notes-search">Find in these notes<input type="search" value={query} placeholder="Enter a topic or keyword" onChange={event => setQuery(event.target.value)} /></label>
       {!visible.length && <p role="status">No matching section. Try a shorter keyword.</p>}
       {visible.join("\n").split("\n").map((line, index) => {
@@ -586,6 +634,11 @@ function Notes({ notes, unitTitle, topics }) {
         }
         return line.trim() && <p key={index}>{line}</p>;
       })}
+      <StudyDiagram notes={notes} diagramSection={diagramSection} title={unitTitle} topics={topics} svgRef={svgRef} />
+      <button type="button" className="notes-button" onClick={downloadPdf} disabled={exporting}>
+        {exporting ? "Preparing PDF…" : "Download unit notes (PDF)"}
+      </button>
+      {exportError && <p role="alert" className="error">{exportError}</p>}
     </article>
   );
 }
