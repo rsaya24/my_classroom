@@ -1,3 +1,4 @@
+import UnitQuiz from "./UnitQuiz.jsx";
 import ExamCalendar from "./ExamCalendar.jsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -636,6 +637,7 @@ function Notes({ notes, subjectTitle, unitTitle, topics }) {
         }
         return line.trim() && <p key={index}>{line}</p>;
       })}
+      <UnitQuiz key={notes} chapter={chapter} subject={subjectTitle} unit={unitTitle} />
       <StudyDiagram notes={notes} diagramSection={diagramSection} title={unitTitle} topics={topics} svgRef={svgRef} />
       <button type="button" className="notes-button" onClick={downloadPdf} disabled={exporting}>
         {exporting ? "Preparing PDF…" : "Download unit notes (PDF)"}
