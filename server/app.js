@@ -94,17 +94,44 @@ export function connectDatabase() {
   return connection;
 }
 
-app.use(["/api/auth", "/api/subjects"], async (_req, res, next) => {
+app.use(["/api/auth", "/api/subjects", "/api/exams"], async (_req, res, next) => {
   res.set("Cache-Control", "no-store");
   await connectDatabase();
   next();
 });
 app.use("/api/auth", accounts);
-app.use("/api/subjects", requireAccount, (req, res, next) => {
+app.use(["/api/subjects", "/api/exams"], requireAccount, (req, res, next) => {
   if (["POST", "PATCH"].includes(req.method) && !req.is("application/json")) {
     return res.status(415).json({ error: "Send a JSON request." });
   }
   next();
+});
+
+const examSchema = new mongoose.Schema({
+  owner: { type: mongoose.Schema.Types.ObjectId, required: true },
+  name: { type: String, required: true, maxlength: 160 },
+  date: { type: String, required: true },
+  time: { type: String, required: true },
+});
+examSchema.index({ owner: 1, date: 1, time: 1 });
+const Exam = mongoose.model("Exam", examSchema);
+
+app.get("/api/exams", async (req, res) => {
+  const exams = await Exam.find({ owner: req.accountId }, "name date time").sort({ date: 1, time: 1 }).lean();
+  res.json(exams);
+});
+
+app.post("/api/exams", async (req, res) => {
+  const { name, date, time } = req.body ?? {};
+  const day = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? new Date(date + "T00:00:00Z") : null;
+  if (typeof name !== "string" || !name.trim() || name.trim().length > 160 ||
+    !day || !Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== date ||
+    typeof time !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+    return res.status(400).json({ error: "Enter an exam name, a valid date and a time." });
+  }
+  const exam = await Exam.create({ owner: req.accountId, name: name.trim(), date, time });
+  res.status(201).json({ _id: exam._id, name: exam.name, date, time });
 });
 
 app.get("/api/subjects", async (req, res) => {

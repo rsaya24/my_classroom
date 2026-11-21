@@ -1,3 +1,4 @@
+import ExamCalendar from "./ExamCalendar.jsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 async function requestApi(path, method = "GET", payload) {
@@ -462,6 +463,7 @@ function Dashboard({ onExpired }) {
           <Metric value={completed} label="Topics completed" />
           <Metric value={topics.length - completed} label="Topics remaining" />
         </section>
+        <ExamCalendar requestApi={requestApi} onExpired={onExpired} />
         <section className="subjects" aria-labelledby="subjects-heading" aria-busy={busy}>
           <div className="section-heading">
             <h2 id="subjects-heading">Your subjects</h2>
